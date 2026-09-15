@@ -1,0 +1,11 @@
+# Herdr-only setup: no font installs, no terminal edits, no theme following.
+variant = "text"
+auto_install_font = false
+follow_appearance = false
+stable_order = true
+show_tab = false
+group_gap = false
+worktree_mark = ""
+idle_grace_seconds = 0
+activity_fresh_minutes = 15
+activity_stale_minutes = 120

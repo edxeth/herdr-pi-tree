@@ -1,0 +1,21 @@
+# Herdr Pi Tree
+
+Herdr-only sidebar plugin: a stable project tree for Pi agents with nested
+subagents, worktree branches, colored inline git stats, and focus indices.
+
+- Verify with `node --test tools/local.test.js tools/git-summary.test.js tools/prompt-state.test.js tools/pi-extension.test.js` and `npm run check` from this directory.
+- This plugin never modifies Pi, terminal fonts/config, or theme selection. Keep keybindings owned by the user.
+- Set plugin preferences before enabling hooks: `pane.agent_detected` can start setup immediately. Defaults prohibit automatic font installation and appearance following (no font tooling ships).
+- Tests must isolate HOME/XDG data as well as Herdr config/state/socket. Named sessions relocate sockets; use the path returned by Herdr, not a predicted socket.
+- Agent indices follow native grouped/priority order, not opaque pane IDs. Use the neutral native header, not a custom view label. Head rows receive 3 cells of Herdr indentation, other rows 1; do not add padding to workspace headings.
+- `herdr plugin link` wants a path relative to the shell's cwd; an absolute path fails with a bare os error 2.
+- Split panes and same-cwd agents are peers. Only worktree metadata creates tree branches. Git scans belong on the five-second refresh, never the animation loop.
+- Subagent detection reads TAB labels matching `[name] …` and session-file `parentSession`/first-prompt fallbacks; word-like tags only (`[7bc11997]` is a commit, not a subagent).
+- Sidebar row titles come from the session record only (last session_info.name wins, first-user-message fallback); never parse the pane terminal title for row text — extensions rewrite it as a live status line (model id, thinking, running tool, spinner frame). No record means 'Untitled' (another agent's kind stands in); a leading word-like `[handle]` tag on the pane or the session name prefixes subagent rows, once. Names cache against the session file's bigint mtimeNs/inode/size revision; re-reads take only appended bytes, at most every 5 s, so runtime renames (user or auto-title extension) reach the row and multi-megabyte transcripts are never slurped twice.
+- `parentSession` headers give true nesting depth: a missing parent falls back one level under the workspace's first main, and with no main left orphans root at top level with their own children still nested. The spawner places child panes as splits in the parent's tab, so raw pane ordinals already order the forest; tree-aware tab keys only matter for subs with a tab of their own. `hidden_process` agents (reviewer, scout, …) run with no Herdr pane at all and never appear in the sidebar.
+- `state-stop` → `state-start` invoked back-to-back can race the daemon's 50 ms delayed shutdown (the pid-lock check sees the dying daemon and skips spawning); verify `animator.pid` is alive after a restart and re-run `state-start` if not.
+- The Pi-side bridge ships at `extensions/herdr-prompt-state.ts`. Setup installs it into ~/.pi/agent/extensions/ under a managed marker unless `auto_install_pi_extension` is off or a foreign file sits at the path (never clobbered); every daemon start converges it again (install-if-enabled-and-missing, refresh-if-owned, refuse-if-foreign), and `unconfigure` removes it. tools/prompt-state.test.js covers the bridge, tools/pi-extension.test.js the install lifecycle.
+- Project heading and indexed session row are distinct: Git belongs beside the project heading, never in the session row. Native separators only; branch white, +green, -red, ahead blue. Only working dots animate at most 1 Hz; completion uses green ✓.
+- `staged/config.toml` (when present) is generated for this machine. Back up and compare the live source before replacing it. Never run a second sidebar writer simultaneously.
+
+- When changing delegated-work status: `pi_subagents_work_v1` is optional, expiring, session-path-bound producer metadata. Reduce status in `state.snapshot()` before badge recovery/holds and workspace aggregation; never infer ownership from cwd/tree fallback or modify the Herdr-managed Pi hook.
