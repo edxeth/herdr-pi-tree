@@ -9,3 +9,9 @@ worktree_mark = ""
 idle_grace_seconds = 0
 activity_fresh_minutes = 15
 activity_stale_minutes = 120
+
+# Where each panel's Git summary sits: inline (default), row, off.
+heading_git = "inline"
+space_git = "inline"
+# Where the background-subagent count sits: heading (default), agent, row, off.
+bg_badge = "heading"
