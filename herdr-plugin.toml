@@ -1,6 +1,6 @@
 id = "herdr-pi-tree"
 name = "Herdr Pi Tree"
-version = "0.2.0"
+version = "0.1.1"
 min_herdr_version = "0.9.0"
 description = "Tree sidebar for Pi agents: nested subagents, worktrees, colored git stats, focus indices."
 platforms = ["linux", "macos", "windows"]

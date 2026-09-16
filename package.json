@@ -1,6 +1,6 @@
 {
   "name": "herdr-pi-tree",
-  "version": "0.2.0",
+  "version": "0.1.1",
   "description": "Tree sidebar for Pi agents in Herdr: nested subagents, worktrees, colored git stats, focus indices.",
   "license": "MIT",
   "private": true,
