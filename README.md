@@ -16,6 +16,10 @@ herdr plugin install edxeth/herdr-pi-tree
 The install build writes the managed blocks and starts the daemon; the
 `unconfigure` action removes everything before uninstalling.
 
+You can read my own `config.toml` as an example:
+[Herdr config with the plugin blocks](https://gist.github.com/edxeth/d664d742aa6e98458d60ca2748b54151).
+The gist shows the three blocks in place with my keybindings and theme.
+
 ## The Pi companion extension
 
 A tiny Pi extension ships in this repository and installs itself into your
