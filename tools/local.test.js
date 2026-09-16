@@ -321,7 +321,12 @@ test('terminal theme retains theme while choosing legible dark sidebar colors', 
   assert.match(result, /\[theme\.custom\]\nselection_bg = "#3b4261"/);
   assert.match(result, /#cdd6f4/);
   assert.doesNotMatch(result,/token = "\$logo(?:_working|_stale)?"/);
-  assert.match(result,/\[ui.sidebar.spaces\]\s+row_gap = 0/);
+  assert.match(result,/\[ui.sidebar.spaces\]\s+(?:#[^\n]*\n)*row_gap = 0/);
+  assert.match(result,/\[ui.sidebar.agents\]\s+(?:#[^\n]*\n)*row_gap = 0/);
+  // Default layout: both Git summaries share the name's row.
+  assert.match(result,/\{ token = "\$group_stale"[^\]]*\}, \{ token = "\$heading_git_branch"/);
+  assert.match(result,/\{ token = "\$space_none"[^\n]*\n\s*\{ token = "\$sgit_branch"/);
+  assert.match(result,/\{ token = "\$bg_heading", fg = "#f9e2af"/);
   assert.doesNotMatch(result,/token = "\$git_summary"/);
   assert.match(result,/token = "\$heading_git_branch", fg = "#ffffff"/);
   assert.match(result,/token = "\$heading_git_added", fg = "#a6e3a1"/);
@@ -661,4 +666,238 @@ test('a heartbeat arriving during snapshot collection is not rejected as too far
     tokens:{pi_subagents_work_v1:workToken({session:'parent.jsonl', count:1, expiresAt:now + 30010})},
   }]);
   assert.equal((await state.snapshot(now))[0].status, 'working');
+});
+
+test('the workspace heading counts only background helpers, not children with their own pane', async (t) => {
+  const now = Date.now();
+  const session = path.join(root, 'badge-parent.jsonl');
+  fs.writeFileSync(session, JSON.stringify({type:'session_info', name:'Badge parent'}) + '\n');
+  const childSession = path.join(root, 'badge-child.jsonl');
+  fs.writeFileSync(childSession, JSON.stringify({type:'session_info', parentSession:session}) + '\n');
+  let panedChild = false;
+  const writes = new Map();
+  t.mock.method(herdr, 'agentsAsync', async () => [
+    {
+      pane_id:'badge-parent', workspace_id:'badge-space', tab_id:'badge-tab', agent:'pi', agent_status:'working',
+      agent_session:{agent:'pi', kind:'path', value:session},
+      tokens:{pi_subagents_work_v1:workToken({session, count:3, expiresAt:now + 30000})},
+    },
+    ...(panedChild ? [{
+      pane_id:'badge-child', workspace_id:'badge-space', tab_id:'badge-child-tab', agent:'pi', agent_status:'working',
+      agent_session:{agent:'pi', kind:'path', value:childSession}, tokens:{},
+    }] : []),
+  ]);
+  t.mock.method(herdr, 'tabsAsync', async () => [
+    {tab_id:'badge-tab', workspace_id:'badge-space', label:'Parent'},
+    {tab_id:'badge-child-tab', workspace_id:'badge-space', label:'[worker] child'},
+  ]);
+  t.mock.method(herdr, 'workspacesAsync', async () => [{workspace_id:'badge-space', label:'Project'}]);
+  t.mock.method(herdr, 'panesAsync', async () => [
+    {pane_id:'badge-parent', tab_id:'badge-tab', workspace_id:'badge-space'},
+    {pane_id:'badge-child', tab_id:'badge-child-tab', workspace_id:'badge-space'},
+  ]);
+  t.mock.method(herdr, 'panelGrouped', () => true);
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { writes.set(id, {...writes.get(id), ...tokens}); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+  const frame = new Frame('test');
+  await frame.render(now);
+  assert.equal(writes.get('badge-parent').bg_heading, '\u21b33');
+  // The badge lives on the heading by default, so the agent line stays clear.
+  assert.equal(writes.get('badge-parent').bg_count, null);
+
+  panedChild = true;
+  const second = new Frame('test');
+  await second.render(now + 1000);
+  assert.equal(writes.get('badge-parent').bg_heading, '\u21b32');
+});
+
+test('heading_git and space_git move or hide each panel Git summary', (t) => {
+  const file = process.env.HERDR_CONFIG_PATH;
+  const managed = require('../lib/managed-config');
+  const write = () => {
+    fs.writeFileSync(file, '[ui]\n[theme]\nname = "terminal"\nauto_switch = false\n');
+    assert.equal(managed.apply().ok, true);
+    return fs.readFileSync(file, 'utf8');
+  };
+  t.after(() => { config.headingGit = 'inline'; config.spaceGit = 'inline'; });
+
+  config.headingGit = 'row';
+  config.spaceGit = 'off';
+  const moved = write();
+  assert.match(moved,/\{ token = "\$group_stale"[^\]]*\}\],\s*\[\{ token = "\$heading_git_branch"/);
+  assert.doesNotMatch(moved,/\$sgit_/);
+
+  config.headingGit = 'off';
+  config.spaceGit = 'row';
+  const hidden = write();
+  assert.doesNotMatch(hidden,/\$heading_git_/);
+  assert.match(hidden,/\{ token = "\$space_none"[^\n]*\n\s*\],\s*\[\s*\{ token = "\$sgit_branch"/);
+});
+
+test('a layout setting makes the installed sidebar block read as stale until it is rewritten', (t) => {
+  const file = process.env.HERDR_CONFIG_PATH;
+  const managed = require('../lib/managed-config');
+  t.after(() => { config.bgBadge = 'heading'; config.headingGit = 'inline'; });
+
+  fs.writeFileSync(file, '[ui]\n[theme]\nname = "terminal"\nauto_switch = false\n');
+  assert.equal(managed.apply().ok, true);
+  const installed = fs.readFileSync(file, 'utf8');
+  assert.equal(managed.sidebarStale(installed), false);
+
+  // This is the daemon's staleness check (lib/daemon.js). Before the signature
+  // carried the layout keys it compared equal here, so the block was never
+  // rewritten and the setting never reached the sidebar.
+  config.bgBadge = 'row';
+  config.headingGit = 'off';
+  assert.equal(managed.sidebarStale(installed), true);
+  assert.equal(managed.apply().ok, true);
+  const rewritten = fs.readFileSync(file, 'utf8');
+  assert.equal(managed.sidebarStale(rewritten), false);
+  assert.match(rewritten,/\],\s*\[\{ token = "\$bg_count"/);
+  assert.doesNotMatch(rewritten,/\$heading_git_/);
+});
+
+test('each bg_badge placement draws the count in exactly one place', async (t) => {
+  const now = Date.now();
+  const session = path.join(root, 'placement-parent.jsonl');
+  fs.writeFileSync(session, JSON.stringify({type:'session_info', name:'Placement'}) + '\n');
+  const writes = new Map();
+  t.after(() => { config.bgBadge = 'heading'; });
+  t.mock.method(herdr, 'agentsAsync', async () => [{
+    pane_id:'place', workspace_id:'place-space', tab_id:'place-tab', agent:'pi', agent_status:'working',
+    agent_session:{agent:'pi', kind:'path', value:session},
+    tokens:{pi_subagents_work_v1:workToken({session, count:2, expiresAt:now + 30000})},
+  }]);
+  t.mock.method(herdr, 'tabsAsync', async () => [{tab_id:'place-tab', workspace_id:'place-space', label:'P'}]);
+  t.mock.method(herdr, 'workspacesAsync', async () => [{workspace_id:'place-space', label:'Project'}]);
+  t.mock.method(herdr, 'panesAsync', async () => [{pane_id:'place', tab_id:'place-tab', workspace_id:'place-space'}]);
+  t.mock.method(herdr, 'panelGrouped', () => true);
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { writes.set(id, {...writes.get(id), ...tokens}); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+
+  const render = async (placement, at) => {
+    config.bgBadge = placement;
+    writes.clear();
+    await new Frame('test').render(at);
+    return writes.get('place');
+  };
+  const mark = config.STATIC_GLYPH.delegated;
+
+  const heading = await render('heading', now);
+  assert.equal(heading.bg_heading, `${mark}2`);
+  assert.equal(heading.bg_count, null);
+
+  const agent = await render('agent', now + 1000);
+  assert.equal(agent.bg_count, `${mark}2`);
+  assert.equal(agent.bg_heading, null);
+
+  const row = await render('row', now + 2000);
+  assert.equal(row.bg_count, `${mark}2`);
+
+  const off = await render('off', now + 3000);
+  assert.equal(off.bg_count, null);
+  assert.equal(off.bg_heading, null);
+});
+
+test('an absent sidebar block is not stale, and a stray layout comment does not make it stale', (t) => {
+  const file = process.env.HERDR_CONFIG_PATH;
+  const managed = require('../lib/managed-config');
+  t.after(() => { config.bgBadge = 'heading'; });
+
+  fs.writeFileSync(file, '[ui]\n[theme]\nname = "terminal"\nauto_switch = false\n');
+  assert.equal(managed.apply().ok, true);
+  // The user switches to Herdr's own Agents panel; the block's absence is the
+  // only record of that, so a daemon start must leave it absent.
+  assert.equal(managed.setSidebarRows(false).ok, true);
+  const off = fs.readFileSync(file, 'utf8');
+  assert.equal(managed.sidebarStale(off), false);
+  config.bgBadge = 'row';
+  assert.equal(managed.sidebarStale(off), false);
+
+  // A comment of the user's own that happens to look like the plugin's.
+  config.bgBadge = 'heading';
+  assert.equal(managed.setSidebarRows(true).ok, true);
+  const decoy = `# layout: something of my own\n${fs.readFileSync(file, 'utf8')}`;
+  assert.equal(managed.sidebarStale(decoy), false);
+});
+
+test('a child that draws a row never counts toward its parent badge, however it is nested', async (t) => {
+  // Past the label cache another test warmed, so this one reads its own tabs.
+  const now = Date.now() + 600000;
+  const session = path.join(root, 'rows-parent.jsonl');
+  fs.writeFileSync(session, JSON.stringify({type:'session_info', name:'Rows parent'}) + '\n');
+  // No parentSession header: this child is recognised only by its tab label,
+  // so the tree nests it by fallback and the header edges never see it.
+  const labelled = path.join(root, 'rows-labelled.jsonl');
+  fs.writeFileSync(labelled, JSON.stringify({type:'session_info'}) + '\n');
+  // A real header edge, but re-homed to another workspace: the tree draws it
+  // there, so nesting drops the edge while the row still exists.
+  const rehomed = path.join(root, 'rows-rehomed.jsonl');
+  fs.writeFileSync(rehomed, JSON.stringify({type:'session_info', parentSession:session}) + '\n');
+  const writes = new Map();
+  t.mock.method(herdr, 'agentsAsync', async () => [
+    {pane_id:'rp', workspace_id:'rw', tab_id:'rt', agent:'pi', agent_status:'working',
+     agent_session:{agent:'pi', kind:'path', value:session},
+     tokens:{pi_subagents_work_v1:workToken({session, count:3, expiresAt:now + 30000})}},
+    {pane_id:'rl', workspace_id:'rw', tab_id:'rlt', agent:'pi', agent_status:'working',
+     agent_session:{agent:'pi', kind:'path', value:labelled}, tokens:{}},
+    {pane_id:'rr', workspace_id:'other', tab_id:'rrt', agent:'pi', agent_status:'working',
+     agent_session:{agent:'pi', kind:'path', value:rehomed}, tokens:{}},
+  ]);
+  t.mock.method(herdr, 'tabsAsync', async () => [
+    {tab_id:'rt', workspace_id:'rw', label:'Parent'},
+    {tab_id:'rlt', workspace_id:'rw', label:'[worker] orphan'},
+    {tab_id:'rrt', workspace_id:'other', label:'Elsewhere'},
+  ]);
+  t.mock.method(herdr, 'workspacesAsync', async () => [
+    {workspace_id:'rw', label:'Project'}, {workspace_id:'other', label:'Other'},
+  ]);
+  t.mock.method(herdr, 'panesAsync', async () => [
+    {pane_id:'rp', tab_id:'rt', workspace_id:'rw'},
+    {pane_id:'rl', tab_id:'rlt', workspace_id:'rw'},
+    {pane_id:'rr', tab_id:'rrt', workspace_id:'other'},
+  ]);
+  t.mock.method(herdr, 'panelGrouped', () => true);
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { writes.set(id, {...writes.get(id), ...tokens}); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+  await new Frame('test').render(now);
+  // Three delegations, two of them drawing a row: one left unseen.
+  assert.equal(writes.get('rp').bg_heading, `${config.STATIC_GLYPH.delegated}1`);
+});
+
+test('an own-row badge sits at its agent row column, at every nesting depth', async (t) => {
+  const now = Date.now() + 900000;
+  const parentSession = path.join(root, 'indent-parent.jsonl');
+  fs.writeFileSync(parentSession, JSON.stringify({type:'session_info'}) + '\n');
+  const memberSession = path.join(root, 'indent-member.jsonl');
+  fs.writeFileSync(memberSession, JSON.stringify({type:'session_info'}) + '\n');
+  const writes = new Map();
+  t.after(() => { config.bgBadge = 'heading'; });
+  config.bgBadge = 'row';
+  const work = (session) => workToken({session, count:1, expiresAt:now + 30000});
+  t.mock.method(herdr, 'agentsAsync', async () => [
+    {pane_id:'ihead', workspace_id:'iw', tab_id:'it1', agent:'pi', agent_status:'working',
+     agent_session:{agent:'pi', kind:'path', value:parentSession},
+     tokens:{pi_subagents_work_v1:work(parentSession)}},
+    {pane_id:'imem', workspace_id:'iw', tab_id:'it2', agent:'pi', agent_status:'working',
+     agent_session:{agent:'pi', kind:'path', value:memberSession},
+     tokens:{pi_subagents_work_v1:work(memberSession)}},
+  ]);
+  t.mock.method(herdr, 'tabsAsync', async () => [
+    {tab_id:'it1', workspace_id:'iw', label:'One'}, {tab_id:'it2', workspace_id:'iw', label:'Two'},
+  ]);
+  t.mock.method(herdr, 'workspacesAsync', async () => [{workspace_id:'iw', label:'Project'}]);
+  t.mock.method(herdr, 'panesAsync', async () => [
+    {pane_id:'ihead', tab_id:'it1', workspace_id:'iw'}, {pane_id:'imem', tab_id:'it2', workspace_id:'iw'},
+  ]);
+  t.mock.method(herdr, 'panelGrouped', () => true);
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { writes.set(id, {...writes.get(id), ...tokens}); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+  await new Frame('test').render(now);
+  // The badge is a continuation row, so Herdr indents it the same for both.
+  // Carrying the head/member compensation would push the member's two columns
+  // past the row it belongs to.
+  const badge = `${config.STATIC_GLYPH.delegated}1`;
+  assert.equal(writes.get('ihead').bg_count, badge);
+  assert.equal(writes.get('imem').bg_count, badge);
 });

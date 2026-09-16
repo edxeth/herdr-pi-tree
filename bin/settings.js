@@ -115,6 +115,27 @@ const FIELDS = [
   },
   { key: 'group_indent', kind: 'number', step: 1, min: 0, max: 8, fallback: 2, help: 'Spaces members sit in under a workspace header; 0 = flat list.' },
   { key: 'group_gap', kind: 'bool', fallback: true, help: 'A blank row between workspace groups.' },
+  {
+    key: 'heading_git',
+    kind: 'enum',
+    options: ['inline', 'row', 'off'],
+    fallback: 'inline',
+    help: 'Agents panel Git summary: on the workspace name, on a row of its own, or hidden. inline truncates a long name.',
+  },
+  {
+    key: 'space_git',
+    kind: 'enum',
+    options: ['inline', 'row', 'off'],
+    fallback: 'inline',
+    help: 'Spaces panel Git summary: on the space name, on a row of its own, or hidden.',
+  },
+  {
+    key: 'bg_badge',
+    kind: 'enum',
+    options: ['heading', 'agent', 'row', 'off'],
+    fallback: 'heading',
+    help: 'Where the \u21b3N count of background subagents sits: the workspace heading, the agent line, a line of its own, or nowhere.',
+  },
   { key: 'show_tab', kind: 'bool', fallback: false, help: 'Show the tab number on the state line.' },
   {
     key: 'trim_group_prefix',
