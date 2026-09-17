@@ -901,3 +901,32 @@ test('an own-row badge sits at its agent row column, at every nesting depth', as
   assert.equal(writes.get('ihead').bg_count, badge);
   assert.equal(writes.get('imem').bg_count, badge);
 });
+
+test('sort keys lost by a server restart are republished despite an unchanged cache', async (t) => {
+  const now = Date.now();
+  let agentTokens = {};
+  t.mock.method(herdr, 'agentsAsync', async () => [{
+    pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'pi', agent_status: 'idle', cwd: root,
+    agent_session: { agent: 'pi', kind: 'path', value: path.join(root, 'sortkeys.jsonl') }, tokens: agentTokens,
+  }]);
+  t.mock.method(state, 'labels', async () => ({ tabs: new Map([['w1:t1', 'One']]), workspaces: new Map([['w1', 'Project']]), parents: new Map(), worktrees: new Map() }));
+  const calls = [];
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { if ('ws_key' in tokens) calls.push({ id, tokens }); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+  const frame = new Frame('test');
+  await frame.render(now);
+  const first = calls.find((c) => c.id === 'w1:p1');
+  assert.ok(first, 'the first frame publishes sort keys');
+  // The pane's metadata died with a restarted server while the daemon — and
+  // its lastSort cache — lived on: the agent list reports no keys, and the
+  // panel buries the pane under every keyed one. The next frame must notice
+  // and republish, or the indices read 1, 6, 7, 2, …
+  calls.length = 0;
+  await frame.render(now + 1000);
+  assert.ok(calls.some((c) => c.id === 'w1:p1'), 'a pane whose keys vanished server-side is republished');
+  // Steady state: the panel holds what the frame computes, so nothing moves.
+  calls.length = 0;
+  agentTokens = Object.fromEntries(Object.entries(first.tokens).filter(([, value]) => value !== null));
+  await frame.render(now + 2000);
+  assert.equal(calls.filter((c) => c.id === 'w1:p1').length, 0);
+});
