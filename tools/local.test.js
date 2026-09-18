@@ -188,6 +188,12 @@ test('rows render the session title or Untitled, never the terminal status line'
   // commit-shaped tag is not a handle.
   assert.equal(state.compactTitle({name:'pi', cwd:'/work/app', title:'π · [designer] Fix signup flow · exec', session:file}),'designer: Fix signup flow');
   assert.equal(state.compactTitle({name:'pi', cwd:'/work/app', title:'π · [7bc11997] chore: fix · exec', session:file}),'Fix signup flow');
+  // A hash that starts with a letter spells a word to the tag shape; the
+  // session the user named after a commit keeps its brackets, unhandled.
+  assert.equal(state.compactTitle({name:'pi', cwd:'/work/app', title:'π - [e49336a7] chore: fix - app', session:file}),'Fix signup flow');
+  const commitNamed = path.join(dir, 'commit-named.jsonl');
+  fs.writeFileSync(commitNamed, JSON.stringify({type:'session_info', name:'[e49336a7] chore: fix login'}) + '\n');
+  assert.equal(state.compactTitle({name:'pi', cwd:'/x/app', title:'π - [e49336a7] chore: fix login - app', session:commitNamed}),'[e49336a7] chore: fix login');
   // A handle stands alone until the session names itself; another agent's
   // kind stands in for the record pi will never have.
   assert.equal(state.compactTitle({name:'pi', cwd:'/work/app', title:'◒ π · [designer]'}),'designer');
@@ -516,6 +522,38 @@ test('a sub whose parent pane is gone nests one level under the first main', asy
   assert.equal(writes.get('m1').title_working, '└─ 1: ● Main task');
   assert.equal(writes.get('s1').title_working, sub + '├─ 2: ● worker: stuck task');
   assert.equal(writes.get('s2').title_working, sub + '└─ 3: ● scout');
+});
+
+test('a session named after a commit is not a subagent pane', async (t) => {
+  t.mock.method(herdr, 'agentsAsync', async () => [
+    {pane_id:'commit-pane', agent:'pi', agent_status:'idle', terminal_title_stripped:'π - [e49336a7] feat(subagents): toggle - repo'},
+    {pane_id:'worker-pane', agent:'pi', agent_status:'idle', terminal_title_stripped:'π - [worker] ship it - repo'},
+  ]);
+  const entries = await state.snapshot(Date.now());
+  assert.equal(entries.find((e) => e.pane === 'commit-pane').sub, false);
+  assert.equal(entries.find((e) => e.pane === 'worker-pane').sub, true);
+});
+
+test('a tab named after a commit does not nest its pane as a subagent', async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-committab-'));
+  const main = writeSession(path.join(dir, 'main.jsonl'), undefined, 'Main task');
+  const commit = writeSession(path.join(dir, 'commit.jsonl'), undefined, '[e49336a7] chore: fix');
+  const entries = [
+    { pane: 'm1', workspace: 'w1', tab: 't1', name: 'pi', title: 'Main task', status: 'working', session: main },
+    { pane: 'c1', workspace: 'w1', tab: 't2', name: 'pi', title: 'π - [e49336a7] chore: fix - repo', status: 'working', session: commit },
+  ];
+  const writes = new Map();
+  t.mock.method(state, 'snapshot', async () => entries);
+  t.mock.method(state, 'labels', async () => ({ tabs: new Map([['t2', '[e49336a7] chore: fix']]), workspaces: new Map([['w1', 'Project']]), parents: new Map(), worktrees: new Map(), info: new Map(), families: new Set() }));
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { writes.set(id, { ...writes.get(id), ...tokens }); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+  t.mock.method(herdr, 'panelGrouped', () => true);
+  const frame = new Frame('test');
+  frame.displayFor = () => 'working';
+  frame.clearGone = () => {};
+  await frame.render(Date.now());
+  assert.equal(writes.get('m1').title_working, '├─ 1: ● Main task');
+  assert.equal(writes.get('c1').title_working, '\u200b  └─ 2: ● [e49336a7] chore: fix');
 });
 
 test('parentage cycles degrade to fallback nesting instead of hanging', async (t) => {
