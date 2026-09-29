@@ -220,6 +220,47 @@ test('a session file that lands late still names its row', () => {
   assert.equal(state.readSessionName(file, 9999999), 'Late name'); // named results stick
 });
 
+test('a recorded session path that is gone never triggers a sessions-root scan', (t) => {
+  const readdir = t.mock.method(fs, 'readdirSync');
+  state.readSessionName(path.join(os.tmpdir(), 'gone-session-dir', 'x_gone.jsonl'), 1000);
+  state.parentEdges([{ pane: 'w1:p1', workspace: 'w1', session: path.join(os.tmpdir(), 'gone-session-dir', 'y_gone.jsonl') }]);
+  assert.equal(readdir.mock.callCount(), 0);
+});
+
+test('a bare session id is found under the sessions root, and a miss is scanned once per window', (t) => {
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-root-'));
+  const project = path.join(agentDir, 'sessions', '--proj--');
+  fs.mkdirSync(project, { recursive: true });
+  const saved = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => { if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = saved; });
+  const id = 'abc123-late-id';
+  const readdir = t.mock.method(fs, 'readdirSync');
+  assert.equal(state.readSessionName(id, 1000), null);
+  const scans = readdir.mock.callCount();
+  assert.ok(scans > 0);
+  fs.writeFileSync(path.join(project, `2026-01-01_${id}.jsonl`), JSON.stringify({type:'session_info', name:'By id'}) + '\n');
+  assert.equal(state.readSessionName(id, 2000), null); // inside the window: no rescan
+  assert.equal(readdir.mock.callCount(), scans);
+  assert.equal(state.readSessionName(id, 1000 + 5001), 'By id');
+});
+
+test('parentEdges, which runs every frame, scans for a missing bare id once per window', (t) => {
+  const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-edges-'));
+  fs.mkdirSync(path.join(agentDir, 'sessions', '--proj--'), { recursive: true });
+  const saved = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  t.after(() => { if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = saved; });
+  const readdir = t.mock.method(fs, 'readdirSync');
+  const entries = [{ pane: 'w1:p1', workspace: 'w1', session: 'edges-missing-id' }];
+  state.parentEdges(entries);
+  const scans = readdir.mock.callCount();
+  assert.ok(scans > 0);
+  state.parentEdges(entries);
+  state.parentEdges(entries, { sameWorkspace: false });
+  assert.equal(readdir.mock.callCount(), scans);
+});
+
 test('a renamed session updates its row once the retry window passes', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-rename-'));
   const file = path.join(dir, 'renamed.jsonl');
@@ -967,4 +1008,98 @@ test('sort keys lost by a server restart are republished despite an unchanged ca
   agentTokens = Object.fromEntries(Object.entries(first.tokens).filter(([, value]) => value !== null));
   await frame.render(now + 2000);
   assert.equal(calls.filter((c) => c.id === 'w1:p1').length, 0);
+});
+
+test('event subscription names each live agent pane, since 0.9.2 refuses a paneless status kind', { skip: process.platform === 'win32' }, async (t) => {
+  const net = require('node:net');
+  const subscribe = require('../lib/subscribe');
+  const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'sub-sock-')), 'h.sock');
+  const saved = process.env.HERDR_SOCKET_PATH;
+  process.env.HERDR_SOCKET_PATH = sock;
+  const requests = [];
+  const streams = [];
+  // Mirrors the 0.9.2 server: a status subscription without pane_id is refused.
+  const server = net.createServer((stream) => {
+    streams.push(stream);
+    stream.on('data', (chunk) => {
+      const request = JSON.parse(String(chunk));
+      requests.push(request.params.subscriptions);
+      const bad = request.params.subscriptions.some((s) => s.type === 'pane.agent_status_changed' && !s.pane_id);
+      stream.write(`${JSON.stringify(bad ? { id: request.id, error: { code: 'invalid_request' } } : { id: request.id, result: { type: 'subscription_started' } })}\n`);
+    });
+    stream.on('error', () => {});
+  });
+  await new Promise((resolve) => server.listen(sock, resolve));
+  let wakes = 0;
+  const sub = subscribe.start({ onWake: () => { wakes += 1; }, onGone: () => {} });
+  t.after(() => {
+    sub.stop();
+    for (const stream of streams) stream.destroy();
+    server.close();
+    if (saved === undefined) delete process.env.HERDR_SOCKET_PATH; else process.env.HERDR_SOCKET_PATH = saved;
+  });
+  const until = async (condition) => { for (let i = 0; i < 200 && !condition(); i += 1) await new Promise((r) => setTimeout(r, 10)); assert.ok(condition()); };
+
+  await until(() => wakes >= 1);
+  assert.equal(requests.length, 1);
+  assert.ok(!requests[0].some((s) => s.type === 'pane.agent_status_changed'));
+
+  sub.setPanes(['w1:p2', 'w1:p1']);
+  await until(() => requests.length === 2);
+  assert.deepEqual(requests[1].filter((s) => s.type === 'pane.agent_status_changed').map((s) => s.pane_id), ['w1:p1', 'w1:p2']);
+  await until(() => wakes >= 2); // the ack of the new stream resyncs
+
+  sub.setPanes(['w1:p1', 'w1:p2']); // same set, different order: nothing to do
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(requests.length, 2);
+
+  sub.setPanes(['w1:p1']);
+  await until(() => requests.length === 3);
+  assert.deepEqual(requests[2].filter((s) => s.type === 'pane.agent_status_changed').map((s) => s.pane_id), ['w1:p1']);
+});
+
+test('reads inside a session share one snapshot; outside they call the list methods', async (t) => {
+  const calls = [];
+  const snapshot = { agents: [{ pane_id: 'a' }], workspaces: [{ workspace_id: 'w' }], tabs: [{ tab_id: 't' }], panes: [{ pane_id: 'p' }] };
+  t.mock.method(ipc, 'call', async (method) => {
+    calls.push(method);
+    return method === 'session.snapshot' ? { result: { snapshot } } : { result: { agents: [{ pane_id: 'listed' }] } };
+  });
+  const [agents, workspaces, tabs, panes] = await herdr.withSession(() =>
+    Promise.all([herdr.agentsAsync(), herdr.workspacesAsync(), herdr.tabsAsync(), herdr.panesAsync()]));
+  assert.deepEqual([agents, workspaces, tabs, panes], [snapshot.agents, snapshot.workspaces, snapshot.tabs, snapshot.panes]);
+  assert.deepEqual(calls, ['session.snapshot']);
+  assert.deepEqual(await herdr.agentsAsync(), [{ pane_id: 'listed' }]);
+  assert.deepEqual(calls, ['session.snapshot', 'agent.list']);
+});
+
+test('a session whose socket stalls is answered by the CLI within milliseconds', { skip: process.platform === 'win32' }, async (t) => {
+  const bin = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'fake-herdr-')), 'herdr');
+  fs.writeFileSync(bin, `#!/bin/sh\n[ "$1 $2" = "api snapshot" ] && echo '{"result":{"snapshot":{"agents":[{"pane_id":"from-cli"}]}}}'\n`, { mode: 0o755 });
+  const saved = process.env.HERDR_BIN_PATH;
+  process.env.HERDR_BIN_PATH = bin;
+  t.after(() => { if (saved === undefined) delete process.env.HERDR_BIN_PATH; else process.env.HERDR_BIN_PATH = saved; });
+  // The 0.9.2 stall: the socket reply arrives late (100 ms there, 1 s here).
+  t.mock.method(ipc, 'call', () => new Promise((resolve) => setTimeout(() => resolve({ result: { snapshot: { agents: [{ pane_id: 'from-socket' }] } } }), 1000)));
+  const started = Date.now();
+  const agents = await herdr.withSession(() => herdr.agentsAsync());
+  assert.deepEqual(agents, [{ pane_id: 'from-cli' }]);
+  assert.ok(Date.now() - started < 500, `took ${Date.now() - started} ms`);
+});
+
+test('a session falls back to the plain list read when no snapshot arrives', async (t) => {
+  t.mock.method(ipc, 'call', async (method) => (method === 'session.snapshot' ? { error: { code: 'unknown_method' } } : { result: { tabs: [{ tab_id: 'listed' }] } }));
+  assert.deepEqual(await herdr.withSession(() => herdr.tabsAsync()), [{ tab_id: 'listed' }]);
+});
+
+test('a session opened with fast:false never spawns the CLI', { skip: process.platform === 'win32' }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-herdr-'));
+  const marker = path.join(dir, 'spawned');
+  fs.writeFileSync(path.join(dir, 'herdr'), `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+  const saved = process.env.HERDR_BIN_PATH;
+  process.env.HERDR_BIN_PATH = path.join(dir, 'herdr');
+  t.after(() => { if (saved === undefined) delete process.env.HERDR_BIN_PATH; else process.env.HERDR_BIN_PATH = saved; });
+  t.mock.method(ipc, 'call', () => new Promise((resolve) => setTimeout(() => resolve({ result: { snapshot: { tabs: [{ tab_id: 'slow-socket' }] } } }), 150)));
+  assert.deepEqual(await herdr.withSession(() => herdr.tabsAsync(), { fast: false }), [{ tab_id: 'slow-socket' }]);
+  assert.equal(fs.existsSync(marker), false);
 });
