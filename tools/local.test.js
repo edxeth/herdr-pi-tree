@@ -1010,6 +1010,42 @@ test('sort keys lost by a server restart are republished despite an unchanged ca
   assert.equal(calls.filter((c) => c.id === 'w1:p1').length, 0);
 });
 
+test('row and Spaces tokens lost by a server restart are republished despite unchanged caches', async (t) => {
+  const now = Date.now();
+  // A faithful fake of the server's token store: reports patch it, lists read it.
+  let paneStore = {};
+  let wsStore = {};
+  const patch = (store, tokens) => { for (const [name, value] of Object.entries(tokens)) { if (value === null || value === undefined) delete store[name]; else store[name] = value; } };
+  t.mock.method(herdr, 'agentsAsync', async () => [{
+    pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'pi', agent_status: 'idle', cwd: root,
+    agent_session: { agent: 'pi', kind: 'path', value: path.join(root, 'rowlost.jsonl') }, tokens: { ...paneStore },
+  }]);
+  t.mock.method(herdr, 'panesAsync', async () => []);
+  t.mock.method(state, 'labels', async () => ({ tabs: new Map([['w1:t1', 'One']]), workspaces: new Map([['w1', 'Project']]), parents: new Map(), worktrees: new Map(), wsTokens: new Map([['w1', { ...wsStore }]]) }));
+  const paneWrites = [];
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { paneWrites.push(tokens); if (id === 'w1:p1') patch(paneStore, tokens); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async (id, src, tokens) => { if (id === 'w1') patch(wsStore, tokens); return true; });
+  const rowNames = (store) => Object.keys(store).filter((name) => name.startsWith('title_') || name.startsWith('state_'));
+  const hasSpace = () => Object.keys(wsStore).some((name) => name.startsWith('space_'));
+  const frame = new Frame('test');
+  await frame.render(now);
+  assert.ok(rowNames(paneStore).length > 0, 'the first frame publishes the row');
+  assert.ok(hasSpace(), 'the first frame publishes the Space');
+
+  // Steady state: nothing was lost, so the next frame writes no row.
+  paneWrites.length = 0;
+  await frame.render(now + 1000);
+  assert.equal(paneWrites.filter((tokens) => rowNames(tokens).some((name) => tokens[name] !== null)).length, 0);
+
+  // The server restarted under the living daemon and its metadata went with
+  // the old process; the frame's caches still say everything is on screen.
+  paneStore = {};
+  wsStore = {};
+  await frame.render(now + 2000);
+  assert.ok(rowNames(paneStore).length > 0, 'a row the server lost is republished');
+  assert.ok(hasSpace(), 'a Space the server lost is republished');
+});
+
 test('event subscription names each live agent pane, since 0.9.2 refuses a paneless status kind', { skip: process.platform === 'win32' }, async (t) => {
   const net = require('node:net');
   const subscribe = require('../lib/subscribe');
@@ -1102,4 +1138,17 @@ test('a session opened with fast:false never spawns the CLI', { skip: process.pl
   t.mock.method(ipc, 'call', () => new Promise((resolve) => setTimeout(() => resolve({ result: { snapshot: { tabs: [{ tab_id: 'slow-socket' }] } } }), 150)));
   assert.deepEqual(await herdr.withSession(() => herdr.tabsAsync(), { fast: false }), [{ tab_id: 'slow-socket' }]);
   assert.equal(fs.existsSync(marker), false);
+});
+
+test('labels reports each workspace\'s live tokens even while its label cache is fresh', async (t) => {
+  let listed = [{ workspace_id: 'w1', label: 'One', tokens: { space_idle: '1: One' } }];
+  t.mock.method(herdr, 'tabsAsync', async () => [{ tab_id: 'w1:t1', label: 'One' }]);
+  t.mock.method(herdr, 'workspacesAsync', async () => listed);
+  const later = Date.now() + 1e9; // beyond every earlier test's cache
+  const first = await state.labels(later);
+  assert.deepEqual(first.wsTokens.get('w1'), { space_idle: '1: One' });
+  listed = [{ workspace_id: 'w1', label: 'One', tokens: {} }];
+  const second = await state.labels(later + 1000); // inside the label TTL
+  assert.deepEqual(second.wsTokens.get('w1'), {});
+  assert.equal(second.tabs.get('w1:t1'), 'One');
 });
