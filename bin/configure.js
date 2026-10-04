@@ -73,7 +73,7 @@ async function main() {
     console.log(result.message);
     // `--reload` is what the manifest actions pass: a user who installed from
     // GitHub never sees this directory, so the action has to finish the job.
-    if (process.argv.includes('--reload')) {
+    if (result.ok && process.argv.includes('--reload')) {
       reloadConfig();
       console.log('herdr: config reloaded');
     } else {
@@ -93,4 +93,7 @@ async function main() {
   console.log(`state   ${''.padEnd(16)} ${stateRoot}`);
 }
 
-main();
+main().catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});

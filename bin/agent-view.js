@@ -97,6 +97,11 @@ async function main() {
                 : { cmd: 'view', op: 'cycle' };
 
   const reply = await control.request(message, 3000);
+  if (reply?.ok && reply.error) {
+    console.error(reply.error);
+    process.exitCode = 1;
+    return;
+  }
   if (reply?.ok && reply.applied) {
     console.log(SAID[reply.mode]);
     return;
@@ -104,4 +109,7 @@ async function main() {
   await standalone(flag, message, current);
 }
 
-main();
+main().catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});

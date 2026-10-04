@@ -5,9 +5,20 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-pi-tree-test-'));
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith('HERDR_')) delete process.env[key];
+}
+process.env.HOME = root;
+process.env.USERPROFILE = root;
+process.env.XDG_CONFIG_HOME = path.join(root, 'xdg-config');
+process.env.XDG_STATE_HOME = path.join(root, 'xdg-state');
+process.env.XDG_DATA_HOME = path.join(root, 'xdg-data');
+process.env.PI_CODING_AGENT_DIR = path.join(root, 'pi');
 process.env.HERDR_PLUGIN_CONFIG_DIR = root;
 process.env.HERDR_PLUGIN_STATE_DIR = path.join(root, 'state');
 process.env.HERDR_CONFIG_PATH = path.join(root, 'herdr.toml');
+process.env.HERDR_SOCKET_PATH = path.join(root, 'herdr.sock');
+process.env.HERDR_BIN_PATH = path.join(root, 'no-live-herdr');
 fs.writeFileSync(path.join(root, 'config.toml'), 'variant = "text"\nfollow_appearance = false\nauto_install_font = false\nstable_order = true\nworktree_mark = ""\n');
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 const config = require('../lib/config');
@@ -42,6 +53,7 @@ test('first-run setup never installs fonts when disabled', (t) => {
   const font = require('../lib/font');
   const managed = require('../lib/managed-config');
   t.mock.method(managed, 'inspect', () => ({ state: 'installed' }));
+  t.mock.method(herdr, 'reloadConfig', () => {});
   t.mock.method(font, 'install', () => assert.fail('font installation is forbidden'));
   t.mock.method(font, 'configureTerminals', () => assert.fail('terminal edits are forbidden'));
   require('../lib/setup').ensure({ force: true });
@@ -1151,4 +1163,211 @@ test('labels reports each workspace\'s live tokens even while its label cache is
   const second = await state.labels(later + 1000); // inside the label TTL
   assert.deepEqual(second.wsTokens.get('w1'), {});
   assert.equal(second.tabs.get('w1:t1'), 'One');
+});
+
+test('light sidebar installs, refreshes and appearance changes emit valid colors in both panels', (t) => {
+  const managed = require('../lib/managed-config');
+  const file = process.env.HERDR_CONFIG_PATH;
+  const originalBadge = config.bgBadge;
+  t.after(() => { config.bgBadge = originalBadge; });
+  for (const placement of ['heading', 'agent', 'row', 'off']) {
+    config.bgBadge = placement;
+    for (const route of ['rows', 'refresh', 'appearance']) {
+      fs.writeFileSync(file, '[ui]\n[theme]\nname = "catppuccin-latte"\n');
+      assert.equal(managed.setSidebarRows(true).ok, true);
+      if (route === 'refresh') assert.equal(managed.apply().ok, true);
+      if (route === 'appearance') {
+        assert.equal(managed.applyAppearance('dark').ok, true);
+        assert.equal(managed.applyAppearance('light').ok, true);
+      }
+      const text = fs.readFileSync(file, 'utf8');
+      for (const panel of ['agents', 'spaces']) {
+        const rows = text.split(`[ui.sidebar.${panel}]`)[1].split('\n[')[0];
+        const colors = [...rows.matchAll(/\bfg = "([^"]*)"/g)];
+        assert.ok(colors.length > 0, `${route}/${placement}/${panel} has styled cells`);
+        for (const [, color] of colors) assert.match(color, /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i);
+      }
+      assert.match(text, /token = "\$title_working", fg = "#c78a1f"/);
+      for (const vendor of ['claude', 'codex', 'grok', 'other']) {
+        assert.ok(text.includes(`token = "$space_working_${vendor}", fg = "#c78a1f"`));
+      }
+      if (placement !== 'off') {
+        const token = placement === 'heading' ? '$bg_heading' : '$bg_count';
+        assert.ok(text.includes(`token = "${token}", fg = "#c78a1f"`));
+      }
+    }
+  }
+});
+
+// Exercise real command entry points with a fake Herdr subprocess. The preload
+// also isolates the Windows control pipe identity, without relying on a shell.
+function reloadFixture(t, response) {
+  const dir = fs.mkdtempSync(path.join(root, 'reload-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const preload = path.join(dir, 'preload.cjs');
+  const reply = path.join(dir, 'reply.json');
+  const calls = path.join(dir, 'calls.txt');
+  fs.writeFileSync(reply, JSON.stringify(response));
+  fs.writeFileSync(preload, `
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const user = os.userInfo();
+    // Windows control pipes use the account name, not the state directory.
+    os.userInfo = () => ({ ...user, username: ${JSON.stringify(path.basename(root) + '-' + path.basename(dir))} });
+    require('node:child_process').spawnSync = (bin, args) => {
+      require('node:assert/strict').deepEqual(args, ['server', 'reload-config']);
+      fs.appendFileSync(${JSON.stringify(calls)}, 'reload\\n');
+      return JSON.parse(fs.readFileSync(${JSON.stringify(reply)}, 'utf8'));
+    };
+  `);
+  fs.writeFileSync(path.join(dir, 'herdr.toml'), '[ui]\n[theme]\nname = "catppuccin-latte"\n');
+  fs.writeFileSync(path.join(dir, 'config.toml'), 'follow_appearance = false\nauto_install_font = false\nauto_install_pi_extension = false\nstable_order = false\n');
+  const env = { ...process.env, HERDR_CONFIG_PATH: path.join(dir, 'herdr.toml'),
+    HERDR_PLUGIN_CONFIG_DIR: dir, HERDR_PLUGIN_STATE_DIR: path.join(dir, 'state') };
+  return {
+    dir, reply, calls,
+    run: (...args) => require('node:child_process').spawnSync(process.execPath, ['--require', preload, ...args], {
+      cwd: path.resolve(__dirname, '..'), env, encoding: 'utf8', timeout: 5000,
+    }),
+  };
+}
+
+const partialReload = { status: 0, stdout: JSON.stringify({ result: {
+  type: 'config_reload', status: 'partial', diagnostics: ['invalid sidebar.agents.rows; keeping current ui settings'],
+} }) };
+const appliedReload = { status: 0, stdout: JSON.stringify({ result: {
+  type: 'config_reload', status: 'applied', diagnostics: [],
+} }) };
+
+test('reload fixtures isolate the Windows control pipe and share it with their clients', (t) => {
+  // Evaluate the actual Windows endpoint branch without opening a pipe, even
+  // on Unix. HOME and USERPROFILE alone do not change os.userInfo().username.
+  const code = `
+    const filename = ${JSON.stringify(path.resolve(__dirname, '../lib/control.js'))};
+    const module = { exports: {} };
+    require('node:vm').runInNewContext(require('node:fs').readFileSync(filename, 'utf8'), {
+      module, process: { platform: 'win32' }, require: require('node:module').createRequire(filename),
+    });
+    console.log(module.exports.endpoint());
+  `;
+  const live = require('node:child_process').spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', timeout: 5000 });
+  assert.equal(live.status, 0, live.stderr);
+  const fixture = reloadFixture(t, appliedReload);
+  const daemon = fixture.run('-e', code);
+  const client = fixture.run('-e', code);
+  const other = reloadFixture(t, appliedReload).run('-e', code);
+  for (const result of [daemon, client, other]) assert.equal(result.status, 0, result.stderr);
+  assert.notEqual(daemon.stdout, live.stdout, 'the fixture must not address the live daemon');
+  assert.equal(client.stdout, daemon.stdout, 'daemon and client must share the fixture pipe');
+  assert.notEqual(other.stdout, daemon.stdout, 'separate fixtures must not compete for a pipe');
+});
+
+test('reload rejects partial, failed and invalid replies instead of reporting success', (t) => {
+  const cases = [
+    [partialReload, /invalid sidebar\.agents\.rows; keeping current ui settings/],
+    [{ status: 1, stderr: 'server unavailable' }, /server unavailable/],
+    [{ status: null, error: { message: 'spawn herdr ENOENT' } }, /ENOENT/],
+    [{ status: null, error: { message: 'spawn herdr ETIMEDOUT' } }, /ETIMEDOUT/],
+    [{ status: 2, stderr: '' }, /exit 2/],
+    [{ status: 0, stdout: 'not json' }, /invalid response/],
+    [{ status: 0, stdout: '{}' }, /missing status/],
+  ];
+  for (const [response, expected] of cases) {
+    const fixture = reloadFixture(t, response);
+    const result = fixture.run('-e', "require('./lib/herdr').reloadConfig()");
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /config reload failed/);
+    assert.match(result.stderr, expected);
+  }
+});
+
+test('configure reports partial reload failure and succeeds only after an applied reply', (t) => {
+  const fixture = reloadFixture(t, partialReload);
+  const failed = fixture.run('bin/configure.js', '--apply', '--reload');
+  assert.equal(failed.status, 1, failed.stderr);
+  assert.match(failed.stderr, /config reload failed.*invalid sidebar\.agents\.rows/);
+  assert.doesNotMatch(failed.stdout, /config reloaded/);
+  fs.writeFileSync(fixture.reply, JSON.stringify(appliedReload));
+  const applied = fixture.run('bin/configure.js', '--apply', '--reload');
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.match(applied.stdout, /config reloaded/);
+  assert.equal(applied.stderr, '');
+});
+
+test('setup does not stamp or announce a rejected reload as successful', (t) => {
+  const fixture = reloadFixture(t, partialReload);
+  const command = "console.log(require('./lib/setup').ensure().join('\\n'))";
+  const result = fixture.run('-e', command);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /config reload failed/);
+  assert.doesNotMatch(result.stdout, /config reloaded/);
+  assert.equal(fs.existsSync(path.join(fixture.dir, 'state', 'setup.done')), false);
+  assert.equal(fixture.run('-e', command).status, 1, 'an unstamped setup must retry the reload');
+  fs.writeFileSync(fixture.reply, JSON.stringify(appliedReload));
+  const recovered = fixture.run('-e', command);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.match(recovered.stdout, /config reloaded/);
+  assert.equal(fs.existsSync(path.join(fixture.dir, 'state', 'setup.done')), true);
+});
+
+test('sidebar reload retries after a failed attempt even when the file is already written', (t) => {
+  const fixture = reloadFixture(t, partialReload);
+  const command = "require('./lib/view').setRows(true)";
+  assert.equal(fixture.run('-e', command).status, 1);
+  assert.equal(fixture.run('-e', command).status, 1);
+  fs.writeFileSync(fixture.reply, JSON.stringify(appliedReload));
+  const recovered = fixture.run('-e', command);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(fs.readFileSync(fixture.calls, 'utf8'), 'reload\nreload\nreload\n');
+});
+
+test('native view command reports a rejected reload without changing the persisted mode', (t) => {
+  const fixture = reloadFixture(t, partialReload);
+  const result = fixture.run('bin/agent-view.js', '--native');
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /config reload failed/);
+  assert.doesNotMatch(result.stdout, /agent view: back to panel order/);
+  assert.equal(fs.existsSync(path.join(fixture.dir, 'state', 'agent-view.on')), false);
+});
+
+test('daemon logs reload failures, reports them to the view client, and stays alive for recovery', (t) => {
+  const fixture = reloadFixture(t, partialReload);
+  const result = fixture.run('-e', `
+    const fs = require('node:fs');
+    const assert = require('node:assert/strict');
+    const snapshot = { agents: [], panes: [], workspaces: [], tabs: [] };
+    require('./lib/ipc').call = async () => ({ result: { ...snapshot, snapshot } });
+    require('./lib/subscribe').start = () => ({ stop() {}, setPanes() {} });
+    const managed = require('./lib/managed-config');
+    managed.apply();
+    const file = process.env.HERDR_CONFIG_PATH;
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replaceAll('#c78a1f', 'undefined'));
+    const daemon = require('./lib/daemon');
+    const control = require('./lib/control');
+    (async () => {
+      await daemon.start();
+      assert.match(fs.readFileSync(daemon.ERR_FILE(), 'utf8'), /config reload failed/);
+      const failed = await control.request({ cmd: 'view', op: 'native' });
+      assert.equal(failed.applied, false);
+      assert.match(failed.error, /invalid sidebar.agents.rows/);
+      assert.equal(require('./lib/view').mode(), 'grouped');
+      const cli = await new Promise(resolve => {
+        require('node:child_process').execFile(process.execPath,
+          ['--require', ${JSON.stringify(path.join(fixture.dir, 'preload.cjs'))}, 'bin/agent-view.js', '--native'],
+          (error, stdout, stderr) => resolve({ code: error?.code, stdout, stderr }));
+      });
+      assert.equal(cli.code, 1);
+      assert.match(cli.stderr, /config reload failed/);
+      assert.equal(cli.stdout, '');
+      assert.equal(fs.readFileSync(${JSON.stringify(fixture.calls)}, 'utf8'), 'reload\\nreload\\nreload\\n');
+      assert.equal((await control.request({ cmd: 'ping' })).pid, process.pid);
+      fs.writeFileSync(${JSON.stringify(fixture.reply)}, ${JSON.stringify(JSON.stringify(appliedReload))});
+      assert.equal((await control.request({ cmd: 'view', op: 'native' })).applied, true);
+      assert.equal(require('./lib/view').mode(), null);
+      await control.request({ cmd: 'stop' });
+      console.log('daemon recovered');
+    })().catch(error => { console.error(error); process.exit(1); });
+  `);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /daemon recovered/);
 });
