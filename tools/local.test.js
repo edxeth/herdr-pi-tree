@@ -701,6 +701,7 @@ test('fresh delegated work suppresses a recovered completion badge and keeps wor
   await frame.render(now);
   assert.equal(writes.get('parent-work').state_done, null);
   assert.ok(writes.get('parent-work').state_working);
+  assert.equal(writes.get('parent-work').bg_heading, '\u21b32');
   assert.ok(spaces.get('work-space').space_working_other);
   count = 1;
   await frame.render(now + 1000);
@@ -711,8 +712,19 @@ test('fresh delegated work suppresses a recovered completion badge and keeps wor
   native = 'working';
   await frame.render(now + 3000);
   assert.ok(writes.get('parent-work').state_working);
-  native = 'done'; count = 0;
-  await frame.render(now + 3000 + config.idleGraceMs + 1);
+  // Child completion clears the badge without waiting for the parent's turn.
+  count = 0;
+  await frame.render(now + 4000);
+  assert.equal(writes.get('parent-work').bg_heading, null);
+  assert.ok(writes.get('parent-work').state_working);
+  native = 'blocked';
+  await frame.render(now + 5000);
+  assert.equal(writes.get('parent-work').bg_heading, null);
+  assert.ok(writes.get('parent-work').state_blocked);
+  native = 'working'; // Answering the question releases the blocked-state hold.
+  await frame.render(now + 6000);
+  native = 'done';
+  await frame.render(now + 6000 + config.idleGraceMs + 1);
   assert.ok(writes.get('parent-work').state_done);
 });
 

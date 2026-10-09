@@ -35,7 +35,7 @@ Standalone projects inline their Git token on the heading; worktree families giv
 
 `heading_git` and `space_git` move each panel's Git token to a row of its own or hide it; inline is the default above. Inline truncates a long name in a narrow panel, so the two panels are separate keys.
 
-Background subagents own no pane, so they own no row. `bg_badge` places their count as `↳N` on the workspace heading (default), on the agent's own row, on a row of its own, or nowhere. The count comes from the spawner's `pi_subagents_work_v1` pane token; children that already draw a row are subtracted, so it counts only what is otherwise invisible. The mark is `glyphs.delegated`.
+Background subagents own no pane, so they own no row. `bg_badge` places their count as `↳N` on the workspace heading (default), on the agent's own row, on a row of its own, or nowhere. The count comes from the spawner's `pi_subagents_work_v1` pane token; children that already draw a row are subtracted, so it counts only what is otherwise invisible. Completed reports do not count, even while the parent processes them or waits for user input. The mark is `glyphs.delegated`.
 
 A daemon start compares the installed sidebar block with the one this build would write and rewrites it when they differ, which is how a settings change reaches the sidebar; the `configure` action and an appearance flip rewrite it too. An absent block is the record that the user chose Herdr's own Agents panel, so it is left absent.
 
