@@ -4,6 +4,7 @@ Herdr-only sidebar plugin: a stable project tree for Pi agents with nested
 subagents, worktree branches, colored inline git stats, and focus indices.
 
 - Verify with `node --test tools/local.test.js tools/git-summary.test.js tools/prompt-state.test.js tools/pi-extension.test.js` and `npm run check` from this directory.
+- Cutting a release: the version lives in both `package.json` and `herdr-plugin.toml`; bump both, fold the CHANGELOG `[Unreleased]` section into `[X.Y.Z] - date`, commit as `chore(release): set version to X.Y.Z`, and tag annotated `vX.Y.Z`.
 - This plugin never modifies Pi, terminal fonts/config, or theme selection. Keep keybindings owned by the user.
 - Set plugin preferences before enabling hooks: `pane.agent_detected` can start setup immediately. Defaults prohibit automatic font installation and appearance following (no font tooling ships).
 - Tests must isolate HOME/XDG data as well as Herdr config/state/socket. Named sessions relocate sockets; use the path returned by Herdr, not a predicted socket.
