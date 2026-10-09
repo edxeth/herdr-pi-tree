@@ -379,6 +379,8 @@ test('terminal theme retains theme while choosing legible dark sidebar colors', 
   assert.match(result, /name = "terminal"/);
   assert.match(result, /\[theme\.custom\]\nselection_bg = "#3b4261"/);
   assert.match(result, /#cdd6f4/);
+  assert.match(result,/token = "\$group_parent", fg = "#b4befe", bold = true, dim = false/);
+  assert.match(result,/token = "\$group_stale", fg = "#585a64", bold = true, dim = true/);
   assert.doesNotMatch(result,/token = "\$logo(?:_working|_stale)?"/);
   assert.match(result,/\[ui.sidebar.spaces\]\s+(?:#[^\n]*\n)*row_gap = 0/);
   assert.match(result,/\[ui.sidebar.agents\]\s+(?:#[^\n]*\n)*row_gap = 0/);
