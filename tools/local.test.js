@@ -399,6 +399,58 @@ test('terminal theme retains theme while choosing legible dark sidebar colors', 
 });
 
 
+// Herdr refuses a report for a pane or workspace that no longer exists
+// (pane_not_found, workspace_not_found). Clearing a gone target leaves nothing
+// to clear, so it settles; the daemon once retried such clears every minute
+// for as long as it ran, one pair per closed workspace and pane.
+test('clearing a closed workspace or pane settles instead of retrying forever',async t=>{
+  t.mock.method(ipc,'call',async(method,params)=>method==='workspace.report_metadata'
+    ? {id:'plugin-ipc',error:{code:'workspace_not_found',message:`workspace ${params.workspace_id} not found`}}
+    : {id:'plugin-ipc',error:{code:'pane_not_found',message:`pane ${params.pane_id} not found`}});
+  assert.equal(await herdr.reportWorkspaceMetadataAsync('gone','test',{space_none:null}),true);
+  assert.equal(await herdr.reportMetadataAsync('w9:p9','test',{state_idle:null}),true);
+  // A set still fails: the target cannot show it.
+  assert.equal(await herdr.reportWorkspaceMetadataAsync('gone','test',{space_none:'1: Gone'}),false);
+  assert.equal(await herdr.reportMetadataAsync('w9:p9','test',{state_idle:'x'}),false);
+
+  const frame=new Frame('test');
+  frame.lastSpace.set('gone','1::space_none:·:Gone:{}:undefined');
+  const jobs=[];
+  frame.spaceJobs(new Map(),new Map(),new Map(),new Set(),new Map(),Date.now(),jobs);
+  await Promise.all(jobs);
+  assert.equal(frame.lastSpace.has('gone'),false);
+  assert.equal(frame.failedAt.size,0);
+});
+
+// The chunks of one clear go out in parallel, so a closed target refuses each
+// chunk once (2 Spaces requests, 3 pane requests); no later frame retries it.
+test('a closed target is refused only during its first cleanup',async t=>{
+  const requests=[];
+  t.mock.method(ipc,'call',async(method,params)=>{
+    requests.push(method);
+    return method==='workspace.report_metadata'
+      ? {id:'plugin-ipc',error:{code:'workspace_not_found',message:'gone'}}
+      : {id:'plugin-ipc',error:{code:'pane_not_found',message:'gone'}};
+  });
+  const frame=new Frame('test');
+  frame.lastSpace.set('gone','key');
+  frame.lastLine.set('w9:p9','line');
+  for (let round=0; round<3; round+=1) {
+    const jobs=[];
+    frame.spaceJobs(new Map(),new Map(),new Map(),new Set(),new Map(),Date.now()+round*120000,jobs);
+    frame.clearGone(new Set(),Date.now()+round*120000,jobs);
+    await Promise.all(jobs);
+  }
+  assert.equal(requests.filter(m=>m==='workspace.report_metadata').length,2);
+  assert.equal(requests.filter(m=>m==='pane.report_metadata').length,3);
+});
+
+test('a refused clear for another reason still backs off',async t=>{
+  t.mock.method(ipc,'call',async()=>({id:'plugin-ipc',error:{code:'metadata_token_limit',message:'limit'}}));
+  assert.equal(await herdr.reportWorkspaceMetadataAsync('w1','test',{space_none:null}),false);
+  assert.equal(await herdr.reportMetadataAsync('w1:p1','test',{state_idle:null}),false);
+});
+
 test('Spaces indices follow expanded native workspace order including worktrees',async t=>{
   const list=[{workspace_id:'a',worktree:{repo_key:'repo',is_linked_worktree:false}},{workspace_id:'b'},{workspace_id:'child',worktree:{repo_key:'repo',is_linked_worktree:true}}];
   assert.deepEqual(state.workspaceOrder(list).map(w=>w.workspace_id),['a','child','b']);
