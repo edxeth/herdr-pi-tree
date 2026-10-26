@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed refusal choices and agent questions staying marked as working, including questions opened over a background popup. No changes to other extensions are needed. Manually opened menus and replay forms stay working, and pending status clears when a supported question finishes or its session closes.
 - Fixed the sidebar daemon retrying, every minute for as long as it ran, to clear its marks from each workspace and pane that had closed. Herdr refuses reports for a target that no longer exists, so each closed workspace or pane added a pair of refused requests to the Herdr server log for good. A clear of a gone target now counts as done.
 
 ## [0.1.6] - 2026-10-09

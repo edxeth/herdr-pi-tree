@@ -22,13 +22,24 @@ The gist shows the three blocks in place with my keybindings and theme.
 
 ## The Pi companion extension
 
-A tiny Pi extension ships in this repository and installs itself into your
-Pi directory when the plugin sets up — no action needed. It is what makes
-a Pi agent show `?` (waiting on you) instead of a spinning dot while it
-sits at an interactive prompt. It updates itself whenever the plugin is
-reinstalled, and `unconfigure` removes it. If you would rather manage that
-file yourself, set `auto_install_pi_extension` to `false` in the settings
-popup.
+A Pi companion extension ships here and installs into your Pi directory
+when the plugin sets up. It shows `?` for supported agent questions,
+including recovered unanswered questions and refusal choices. Menus and
+replay forms you open yourself do not change a working agent to blocked.
+
+The components that display these questions work without this plugin and
+need no patches. The companion only adds their waiting-status display in
+Herdr. It uses existing version-1 question notifications and recognizes a
+supported refusal selector's caller and registered source files. It does
+not infer waiting from menu wording or a period of inactivity. If that
+caller is renamed, moved or bundled with renamed functions, this plugin's
+adapter needs an update. Unrecognized dialogs are left alone.
+
+The companion refreshes its managed copy when the plugin runs its setup
+or state actions. Reload Pi to load a refreshed copy. `unconfigure`
+removes the managed file. To prevent its first installation, set
+`auto_install_pi_extension` to `false` in the settings popup; an existing
+managed copy still receives updates.
 
 ## Subagents
 
