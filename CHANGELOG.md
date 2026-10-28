@@ -5,6 +5,8 @@
 ### Fixed
 
 - Fixed refusal choices and agent questions staying marked as working, including questions opened over a background popup. No changes to other extensions are needed. Manually opened menus and replay forms stay working, and pending status clears when a supported question finishes or its session closes.
+- Fixed worktrees whose main checkout has no agent appearing under one heading each. They now share one heading, named as Herdr's Spaces panel names the checkout's workspace rather than after the repository directory. The repository name is still used when the checkout is not open as a workspace.
+- Fixed the vertical tree line under a worktree branch. It now sits under the branch corner and stops at the last branch that has an agent row.
 - Fixed the sidebar daemon retrying, every minute for as long as it ran, to clear its marks from each workspace and pane that had closed. Herdr refuses reports for a target that no longer exists, so each closed workspace or pane added a pair of refused requests to the Herdr server log for good. A clear of a gone target now counts as done.
 
 ## [0.1.6] - 2026-10-09

@@ -175,6 +175,106 @@ test('worktree-child agents follow their parent group and nest under the branch'
   assert.match(writes.get('childLate').group, /fix-admin-rewards/);
 });
 
+// Live case: a checkout open as workspace "Storefront" with no agent, and two
+// worktree workspaces cut from it, each running one. Herdr's Spaces panel nests
+// both under Storefront; the Agents panel must draw the same one family.
+const checkoutFamily = () => {
+  const family = { family: '/repo/.git', label: 'Storefront' };
+  return {
+    tabs: new Map(),
+    workspaces: new Map([['wMain', 'Storefront'], ['wA', 'refactor'], ['wB', 'feat'], ['wX', 'other']]),
+    parents: new Map([['wA', 'wMain'], ['wB', 'wMain']]),
+    worktrees: new Map([['wA', family], ['wB', family]]),
+    info: new Map(),
+    families: new Set(['/repo/.git']),
+  };
+};
+
+test('worktrees whose checkout has no agent share one heading named after the checkout workspace', async (t) => {
+  const entries = [
+    { pane: 'x', workspace: 'wX', tab: 'tX', name: 'pi', title: 'Other', status: 'idle' },
+    { pane: 'a', workspace: 'wA', tab: 'tA', name: 'pi', title: 'Redesign', status: 'idle' },
+    { pane: 'a2', workspace: 'wA', tab: 'tA2', name: 'pi', title: '[debugger] Stalled build', status: 'idle', sub: true },
+    { pane: 'b', workspace: 'wB', tab: 'tB', name: 'pi', title: 'Untitled', status: 'idle' },
+  ];
+  const writes = new Map();
+  t.mock.method(state, 'snapshot', async () => entries);
+  t.mock.method(state, 'labels', async () => checkoutFamily());
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { writes.set(id, { ...writes.get(id), ...tokens }); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+  t.mock.method(herdr, 'panelGrouped', () => true);
+  const frame = new Frame('test');
+  frame.displayFor = () => 'idle';
+  frame.clearGone = () => {};
+  await frame.render(Date.now());
+  // One heading for the family, on the first member only.
+  assert.equal(writes.get('a').group_parent, 'Storefront');
+  assert.equal(writes.get('b').group_parent, null);
+  // The first branch is a continuation row under that heading (Herdr indents
+  // it); the second is its own first row, so it carries the indent itself.
+  assert.equal(writes.get('a').group, '├─ refactor');
+  assert.equal(writes.get('b').group, `${state.INDENT}└─ feat`);
+  // No spacer may split the family: a2 is wA's last pane, so it would own one.
+  assert.equal(writes.get('a2').gap, null);
+  // The open branch draws a guide down to its sibling; the closing one does not.
+  // Herdr indents both the branch row and the session rows below it by the
+  // same 3 cells, so the │ leads the session row to sit under the ├ above it.
+  // The branch's own level is outermost: a subagent's deeper level follows it.
+  assert.match(writes.get('a').title_idle, /^\u200b│ {2}└─ \d+: /);
+  // a2 is not its group's first pane, so Herdr gives it 1 cell instead of 3
+  // and the row makes up the other 2 before the same guide.
+  assert.match(writes.get('a2').title_idle, /^\u200b {2}\u200b│ {2}\u200b {3}└─ \d+: /);
+  assert.doesNotMatch(writes.get('b').title_idle, /│/);
+});
+
+test('a flat panel draws no worktree guides once the branch headings are cleared', async (t) => {
+  const entries = [
+    { pane: 'a', workspace: 'wA', tab: 'tA', name: 'pi', title: 'Redesign', status: 'idle' },
+    { pane: 'b', workspace: 'wB', tab: 'tB', name: 'pi', title: 'Untitled', status: 'idle' },
+  ];
+  const writes = new Map();
+  let grouped = true;
+  t.mock.method(state, 'snapshot', async () => entries);
+  t.mock.method(state, 'labels', async () => checkoutFamily());
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { writes.set(id, { ...writes.get(id), ...tokens }); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+  t.mock.method(herdr, 'panelGrouped', () => grouped);
+  t.mock.method(view, 'mode', () => null); // the native toggle decides
+  const frame = new Frame('test');
+  frame.displayFor = () => 'idle';
+  frame.clearGone = () => {};
+  await frame.render(Date.now());
+  assert.match(writes.get('a').title_idle, /│/);
+  grouped = false;
+  await frame.render(Date.now());
+  for (const pane of ['a', 'b']) {
+    assert.equal(writes.get(pane).group, null);
+    assert.equal(writes.get(pane).group_parent, null);
+    // Only the member compensation every flat row gets; no branch level.
+    assert.match(writes.get(pane).title_idle, /^\u200b {2}└─ \d+: /);
+  }
+});
+
+test('a worktree is the last drawn branch when its later siblings have no agent', async (t) => {
+  const entries = [
+    { pane: 'p', workspace: 'wMain', tab: 'tP', name: 'pi', title: 'Main', status: 'idle' },
+    { pane: 'a', workspace: 'wA', tab: 'tA', name: 'pi', title: 'Redesign', status: 'idle' },
+  ];
+  const writes = new Map();
+  t.mock.method(state, 'snapshot', async () => entries);
+  t.mock.method(state, 'labels', async () => checkoutFamily());
+  t.mock.method(herdr, 'reportMetadataAsync', async (id, src, tokens) => { writes.set(id, { ...writes.get(id), ...tokens }); return true; });
+  t.mock.method(herdr, 'reportWorkspaceMetadataAsync', async () => true);
+  t.mock.method(herdr, 'panelGrouped', () => true);
+  const frame = new Frame('test');
+  frame.displayFor = () => 'idle';
+  frame.clearGone = () => {};
+  await frame.render(Date.now());
+  assert.equal(writes.get('a').group, `${state.INDENT}└─ refactor`);
+  // wB has no row, so nothing below may be connected to.
+  assert.doesNotMatch(writes.get('a').title_idle, /│/);
+});
+
 test('rows render the session title or Untitled, never the terminal status line', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-title-'));
   const file = path.join(dir, 'abc123.jsonl');
@@ -1229,6 +1329,20 @@ test('labels reports each workspace\'s live tokens even while its label cache is
   const second = await state.labels(later + 1000); // inside the label TTL
   assert.deepEqual(second.wsTokens.get('w1'), {});
   assert.equal(second.tabs.get('w1:t1'), 'One');
+});
+
+test('labels name a worktree family after its open checkout workspace, else the repository', async (t) => {
+  const repo = { repo_key: '/repo/.git', repo_name: 'shop-repo', repo_root: '/repo' };
+  let listed = [
+    { workspace_id: 'wMain', label: 'Storefront', worktree: { ...repo, is_linked_worktree: false } },
+    { workspace_id: 'wA', label: 'refactor', worktree: { ...repo, is_linked_worktree: true } },
+  ];
+  t.mock.method(herdr, 'tabsAsync', async () => [{ tab_id: 'wA:t1', label: '1' }]);
+  t.mock.method(herdr, 'workspacesAsync', async () => listed);
+  const later = Date.now() + 3e9; // beyond every earlier test's cache
+  assert.deepEqual((await state.labels(later)).worktrees.get('wA'), { family: '/repo/.git', label: 'Storefront' });
+  listed = listed.slice(1);
+  assert.deepEqual((await state.labels(later + 1e5)).worktrees.get('wA'), { family: '/repo/.git', label: 'shop-repo' });
 });
 
 test('light sidebar installs, refreshes and appearance changes emit valid colors in both panels', (t) => {
