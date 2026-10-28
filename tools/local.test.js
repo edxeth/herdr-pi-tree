@@ -991,6 +991,24 @@ test('heading_git and space_git move or hide each panel Git summary', (t) => {
   assert.match(hidden,/\{ token = "\$space_none"[^\n]*\n\s*\],\s*\[\s*\{ token = "\$sgit_branch"/);
 });
 
+// Herdr refreshes a workspace's cached branch (the branch its mobile Spaces
+// rows print) only while [ui.sidebar.spaces] rows name the built-in `branch`
+// token; without one the mobile branch freezes at workspace creation.
+test('every space_git layout keeps a hidden built-in branch cell so Herdr refreshes the branch', (t) => {
+  const file = process.env.HERDR_CONFIG_PATH;
+  const managed = require('../lib/managed-config');
+  t.after(() => { config.spaceGit = 'inline'; });
+  for (const mode of ['inline', 'row', 'off']) {
+    config.spaceGit = mode;
+    fs.writeFileSync(file, '[ui]\n[theme]\nname = "terminal"\nauto_switch = false\n');
+    assert.equal(managed.apply().ok, true);
+    const spaces = fs.readFileSync(file, 'utf8').split('[ui.sidebar.spaces]')[1];
+    const branchCells = spaces.match(/\{ token = "branch"[^\n]*/g) ?? [];
+    assert.equal(branchCells.length, 1, `space_git=${mode}: one built-in branch cell`);
+    assert.match(branchCells[0], /rules = \[\{ contains = "", hide = true \}\]/, `space_git=${mode}: branch cell hidden`);
+  }
+});
+
 test('a layout setting makes the installed sidebar block read as stale until it is rewritten', (t) => {
   const file = process.env.HERDR_CONFIG_PATH;
   const managed = require('../lib/managed-config');
